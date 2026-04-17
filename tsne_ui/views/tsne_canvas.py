@@ -90,8 +90,10 @@ class TSNECanvas(FigureCanvasQTAgg):
         dist, idx = self._kdtree.query([event.xdata, event.ydata])
 
         # Threshold = 1.5 % of data range
-        x_span = self._emb[:, 0].ptp()
-        y_span = self._emb[:, 1].ptp()
+        if self._emb is None:
+            return
+        x_span = np.ptp(self._emb[:, 0])
+        y_span = np.ptp(self._emb[:, 1])
         threshold = max(x_span, y_span) * 0.015
 
         if dist <= threshold:

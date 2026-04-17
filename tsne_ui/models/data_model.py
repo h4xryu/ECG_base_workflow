@@ -28,10 +28,16 @@ class DataModel(QObject):
     def list_experiments(self) -> list[str]:
         if not os.path.isdir(RESULTS_ROOT):
             return []
-        return sorted(
-            name for name in os.listdir(RESULTS_ROOT)
-            if os.path.isfile(os.path.join(RESULTS_ROOT, name, 'tsne_data.npz'))
-        )
+        
+        experiments = []
+        # Recursively search for tsne_data.npz files
+        for root, dirs, files in os.walk(RESULTS_ROOT):
+            if 'tsne_data.npz' in files:
+                # Use the immediate parent folder name as exp_name
+                exp_name = os.path.relpath(root, RESULTS_ROOT)
+                experiments.append(exp_name)
+        
+        return sorted(experiments)
 
     # ── Loading ───────────────────────────────────────────────────────────────
 
