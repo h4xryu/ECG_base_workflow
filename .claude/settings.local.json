@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"D:/anaconda/python.exe\" -m pip install tensorflow)",
+      "Bash(\"D:/anaconda/python.exe\" -m pip install tensorboardX Pillow openpyxl scipy)"
+    ]
+  }
+}
