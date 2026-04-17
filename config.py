@@ -56,6 +56,11 @@ def get_exp_name() -> str:
 MODEL_PATH   = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'ecg_model.h5')
 WEIGHTS_PATH = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'model.weights.h5')
 LOG_DIR      = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'logs')
-RESULTS_DIR  = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'results')
+RESULTS_DIR  = os.path.join(SAVE_DIR, get_exp_name())
 TRAIN_PKL    = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'train_data_SMOTE.pkl')
 TEST_PKL     = os.path.join(os.path.join(SAVE_DIR, get_exp_name()), 'test_data.pkl')
+
+# t-SNE visualization
+TSNE_ENABLED = True
+TSNE_MAX_SAMPLES = 2000  # Limit samples for computational efficiency
+TSNE_PERPLEXITY = 30     # Perplexity parameter for t-SNE

@@ -10,6 +10,7 @@ import tensorflow as tf
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sklearn.metrics import confusion_matrix
+from sklearn.manifold import TSNE
 
 import config
 from metrics import compute_metrics
@@ -35,7 +36,7 @@ def _extract_features(model, X: np.ndarray) -> np.ndarray:
                     if isinstance(l, tf.keras.layers.Flatten)]
     if not flat_outputs:
         return X.squeeze(-1)
-    feat_model = tf.keras.Model(inputs=model.input, outputs=flat_outputs[0])
+    feat_model = tf.keras.Model(inputs=model.inputs, outputs=flat_outputs[0])
     return feat_model.predict(X, verbose=0)
 
 
@@ -46,8 +47,8 @@ def save_tsne_data(model, X_test: np.ndarray, y_test: np.ndarray,
     idx = np.random.choice(len(X_test), n, replace=False)
 
     feats = _extract_features(model, X_test[idx])
-    emb   = sk_TSNE(n_components=2, perplexity=config.TSNE_PERPLEXITY,
-                    random_state=42, n_jobs=-1).fit_transform(feats)
+    emb   = TSNE(n_components=2, perplexity=config.TSNE_PERPLEXITY,
+                 random_state=42, n_jobs=-1).fit_transform(feats)
 
     np.savez(
         os.path.join(exp_dir, 'tsne_data.npz'),
@@ -220,7 +221,7 @@ def save_excel(metrics: dict, cm: np.ndarray, exp_name: str, exp_dir: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_weights(model, exp_dir: str):
-    path = os.path.join(exp_dir, 'weights.h5')
+    path = os.path.join(exp_dir, 'model.weights.h5')
     model.save_weights(path)
     print(f'Weights saved → {path}')
 

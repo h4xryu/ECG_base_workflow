@@ -53,9 +53,10 @@ class SamplePanel(QWidget):
                                height_ratios=[3, 2], hspace=0.45)
         self._ax_ecg  = self._fig.add_subplot(gs[0])
         self._ax_prob = self._fig.add_subplot(gs[1])
-        self._style_axes()
 
         self.canvas = FigureCanvasQTAgg(self._fig)
+        self._style_axes()
+
         layout.addWidget(self.canvas, stretch=1)
 
     def _style_axes(self):
