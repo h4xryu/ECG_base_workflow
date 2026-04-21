@@ -21,6 +21,13 @@ class QATBuilder:
         self.matcher = RuleMatcher(rules, default_rule)
 
     def annotate(self, layer):
+        # Skip nested models and composite layers (layers that contain sub-layers)
+        if isinstance(layer, keras.Model) or any(
+            isinstance(l, keras.layers.Layer)
+            for l in getattr(layer, '_layers', [])
+        ):
+            return layer
+
         rule = self.matcher(layer)
         if rule.skip:
             return layer

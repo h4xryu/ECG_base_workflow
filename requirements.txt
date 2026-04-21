@@ -1,0 +1,25 @@
+# Core
+numpy>=1.24.0,<2.0.0
+tensorflow==2.16.1
+tf_keras
+
+# Quantization
+tensorflow-model-optimization
+
+# ECG / Signal
+wfdb
+PyWavelets
+
+# ML utilities
+scikit-learn
+imbalanced-learn
+scipy
+
+# Visualization & logging
+matplotlib
+seaborn
+tensorboardX
+Pillow
+
+# Excel export
+openpyxl
