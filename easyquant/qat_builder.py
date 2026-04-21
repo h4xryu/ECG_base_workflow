@@ -1,6 +1,6 @@
 """QATBuilder — Keras 모델에 QAT annotation을 붙이고 quantize_apply까지 수행한다."""
 
-from typing import Sequence
+from typing import Dict, Sequence, Type
 
 import tensorflow as tf
 import tensorflow_model_optimization as tfmot
@@ -17,16 +17,28 @@ qkeras = tfmot.quantization.keras
 class QATBuilder:
     """rules/default_rule을 받아 Keras 모델을 QAT-ready 모델로 변환한다."""
 
-    def __init__(self, rules: Sequence[LayerRule], default_rule: LayerRule):
+    def __init__(
+        self,
+        rules: Sequence[LayerRule],
+        default_rule: LayerRule,
+        custom_objects: Dict[str, Type] = None,
+    ):
         self.matcher = RuleMatcher(rules, default_rule)
+        self.custom_objects = custom_objects or {}
 
     def annotate(self, layer):
-        # Skip nested models and composite layers (layers that contain sub-layers)
-        if isinstance(layer, keras.Model) or any(
-            isinstance(l, keras.layers.Layer)
-            for l in getattr(layer, '_layers', [])
-        ):
+
+        if isinstance(layer, keras.Model):
             return layer
+        
+        # Skip any layer that has trainable/non-trainable sublayers
+        try:
+            if hasattr(layer, '_layers') and len(layer._layers) > 0:
+                return layer
+            if hasattr(layer, 'sublayers') and len(layer.sublayers) > 0:
+                return layer
+        except:
+            pass
 
         rule = self.matcher(layer)
         if rule.skip:
@@ -43,10 +55,19 @@ class QATBuilder:
         return qkeras.quantize_annotate_layer(layer, EasyQuantizeConfig(rule))
 
     def build(self, model: keras.Model) -> keras.Model:
-        annotated = keras.models.clone_model(model, clone_function=self.annotate)
-        with qkeras.quantize_scope({
+        with keras.utils.custom_object_scope(self.custom_objects):
+            annotated = keras.models.clone_model(
+                model,
+                clone_function=self.annotate,
+            )
+        scope = {
             "EasyQuantizeConfig": EasyQuantizeConfig,
             "LearnableScaleQuantizer": LearnableScaleQuantizer,
             "LearnableThresholdQuantizer": LearnableThresholdQuantizer,
-        }):
-            return qkeras.quantize_apply(annotated)
+            **self.custom_objects,
+        }
+        # Use custom_object_scope (outer) and quantize_scope (inner) to ensure
+        # custom layers are available during both serialization and quantization
+        with keras.utils.custom_object_scope(scope):
+            with qkeras.quantize_scope(scope):
+                return qkeras.quantize_apply(annotated)
