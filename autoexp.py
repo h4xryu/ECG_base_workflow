@@ -199,7 +199,10 @@ def run_qat(fp_model, X_train, y_train, X_test, y_test):
     Xv, yv = X_train[:n_val], y_train[:n_val]
     Xt, yt = X_train[n_val:], y_train[n_val:]
 
-    qat_model = QATBuilder(QAT_RULES, QAT_DEFAULT_RULE).build(fp_model)
+    qat_model = QATBuilder(
+        QAT_RULES, QAT_DEFAULT_RULE,
+        custom_objects={"CATNet": CATNet, "ChannelAttention": ChannelAttention},
+    ).build(fp_model)
     qat_model.compile(
         optimizer=tf.keras.optimizers.Adam(QAT_LR_MAX),
         loss=get_loss(),
@@ -209,6 +212,7 @@ def run_qat(fp_model, X_train, y_train, X_test, y_test):
     schedule = CosineRestartSchedule(
         lr_max=QAT_LR_MAX, lr_min=QAT_LR_MIN, cycle_length=QAT_CYCLE_LEN
     )
+
     qat_model.fit(
         Xt, yt,
         validation_data=(Xv, yv),
@@ -346,6 +350,7 @@ def run_ptq(fp_model, X_train, X_test, y_test):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     _ensure_dirs()
 
@@ -356,8 +361,14 @@ def main():
 
     results = []
 
-    # 1. FP32
-    fp_model, fp_acc, fp_f1 = run_fp32(X_train, y_train, X_test, y_test)
+    # 1. FP32  (훈련 생략 — 고정 가중치 로드)
+    # fp_model, fp_acc, fp_f1 = run_fp32(X_train, y_train, X_test, y_test)
+    print('\n[1/4] FP32 baseline (skip training — loading saved weights)')
+    fp_model = build_model()
+    fp_model.compile(optimizer=get_optimizer(), loss=get_loss(), metrics=['accuracy'])
+    fp_model.load_weights(FP32_WEIGHTS)
+    fp_acc, fp_f1, _ = _eval_keras(fp_model, X_test, y_test)
+    print(f'  FP32  acc={fp_acc*100:.2f}%  f1={fp_f1*100:.2f}%')
     results.append(('FP32', fp_acc, fp_f1))
 
     # 2. QAT

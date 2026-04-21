@@ -1,10 +1,12 @@
 """TFMOT QuantizeConfig 어댑터 — LayerRule을 TFMOT API로 연결한다 (QAT 전용)."""
 
+import importlib
+
 import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 
 from .factory import QuantizerFactory
-from .specs import LayerRule
+from .specs import LayerRule, QuantizerSpec
 
 keras = tf.keras
 qkeras = tfmot.quantization.keras
@@ -73,7 +75,56 @@ class EasyQuantizeConfig(qkeras.QuantizeConfig):
         del layer
         return [] if self.oq is None else [self.oq]
 
+    @staticmethod
+    def _serialize_quantizer_spec(spec):
+        if spec is None:
+            return None
+        return {"kind": spec.kind, "kwargs": spec.kwargs, "enabled": spec.enabled}
+
+    @staticmethod
+    def _deserialize_quantizer_spec(d):
+        if d is None:
+            return None
+        return QuantizerSpec(kind=d["kind"], kwargs=d.get("kwargs", {}), enabled=d.get("enabled", True))
+
+    @staticmethod
+    def _serialize_type(t):
+        return f"{t.__module__}.{t.__qualname__}"
+
+    @staticmethod
+    def _deserialize_type(s):
+        module_path, _, class_name = s.rpartition(".")
+        return getattr(importlib.import_module(module_path), class_name)
+
     def get_config(self):
-        # NOTE(easyquant): TFMOT serialization에서 rule 복원은 quantize_scope가 담당하므로
-        # 여기서는 빈 dict를 반환해도 무방하다.
-        return {}
+        return {
+            "rule": {
+                "target_types": [self._serialize_type(t) for t in self.rule.target_types],
+                "name_contains": list(self.rule.name_contains),
+                "weight_quantizer": self._serialize_quantizer_spec(self.rule.weight_quantizer),
+                "activation_quantizer": self._serialize_quantizer_spec(self.rule.activation_quantizer),
+                "output_quantizer": self._serialize_quantizer_spec(self.rule.output_quantizer),
+                "quantize_bias": self.rule.quantize_bias,
+                "skip": self.rule.skip,
+            }
+        }
+
+    @classmethod
+    def from_config(cls, config):
+        rc = config["rule"]
+        target_types = []
+        for type_str in rc.get("target_types", []):
+            try:
+                target_types.append(cls._deserialize_type(type_str))
+            except (ImportError, AttributeError):
+                pass
+        rule = LayerRule(
+            target_types=target_types,
+            name_contains=rc.get("name_contains", []),
+            weight_quantizer=cls._deserialize_quantizer_spec(rc.get("weight_quantizer")),
+            activation_quantizer=cls._deserialize_quantizer_spec(rc.get("activation_quantizer")),
+            output_quantizer=cls._deserialize_quantizer_spec(rc.get("output_quantizer")),
+            quantize_bias=rc.get("quantize_bias", False),
+            skip=rc.get("skip", False),
+        )
+        return cls(rule)

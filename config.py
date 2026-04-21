@@ -23,7 +23,7 @@ CLASS_NAMES = ['N', 'S', 'V', 'F', 'Q']
 N_CLASSES   = 5
 
 # Training
-EPOCHS           = 3
+EPOCHS           = 1 
 BATCH_SIZE       = 128
 LEARNING_RATE    = 1e-3
 VALIDATION_SPLIT = 0.2

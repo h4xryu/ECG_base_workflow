@@ -1,6 +1,181 @@
 import tensorflow as tf
 
 
+# ---------------------------------------------------------------------------
+# Primitive building blocks
+# ---------------------------------------------------------------------------
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
+class ConvBNLeaky(tf.keras.layers.Layer):
+    """Conv1D → BatchNormalization → LeakyReLU  (B, T, C)."""
+
+    def __init__(self, filters, kernel_size=9, strides=1, **kwargs):
+        super().__init__(**kwargs)
+        self.filters     = filters
+        self.kernel_size = kernel_size
+        self.strides     = strides
+        self.conv = tf.keras.layers.Conv1D(
+            filters, kernel_size, strides=strides, padding='same', use_bias=False)
+        self.bn  = tf.keras.layers.BatchNormalization()
+        self.act = tf.keras.layers.LeakyReLU()
+
+    def call(self, x, training=False):
+        return self.act(self.bn(self.conv(x), training=training))
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'filters': self.filters, 'kernel_size': self.kernel_size,
+                    'strides': self.strides})
+        return cfg
+
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
+class TransConvBNLeaky(tf.keras.layers.Layer):
+    """Conv1DTranspose → BatchNormalization → LeakyReLU  (B, T, C)."""
+
+    def __init__(self, filters, kernel_size=9, **kwargs):
+        super().__init__(**kwargs)
+        self.filters     = filters
+        self.kernel_size = kernel_size
+        self.conv = tf.keras.layers.Conv1DTranspose(
+            filters, kernel_size, strides=2, padding='same', use_bias=False)
+        self.bn  = tf.keras.layers.BatchNormalization()
+        self.act = tf.keras.layers.LeakyReLU()
+
+    def call(self, x, training=False):
+        return self.act(self.bn(self.conv(x), training=training))
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'filters': self.filters, 'kernel_size': self.kernel_size})
+        return cfg
+
+
+# ---------------------------------------------------------------------------
+# U-Net encoder / decoder stacks
+# ---------------------------------------------------------------------------
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
+class UNetEncoder(tf.keras.layers.Layer):
+    """Strided-conv encoder; returns (output, skip_list)."""
+
+    def __init__(self, mid_ch, num_layers, kernel_size=9, **kwargs):
+        super().__init__(**kwargs)
+        self.mid_ch      = mid_ch
+        self.num_layers  = num_layers
+        self.kernel_size = kernel_size
+        self.enc_layers  = [
+            ConvBNLeaky(mid_ch, kernel_size, strides=2, name=f'enc_{i}')
+            for i in range(num_layers)
+        ]
+
+    def call(self, x, training=False):
+        skips = []
+        for layer in self.enc_layers:
+            x = layer(x, training=training)
+            skips.append(x)
+        return x, skips
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'mid_ch': self.mid_ch, 'num_layers': self.num_layers,
+                    'kernel_size': self.kernel_size})
+        return cfg
+
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
+class UNetDecoder(tf.keras.layers.Layer):
+    """Transposed-conv decoder consuming skip connections from the encoder."""
+
+    def __init__(self, out_ch, mid_ch, num_layers, kernel_size=9, **kwargs):
+        super().__init__(**kwargs)
+        self.out_ch      = out_ch
+        self.mid_ch      = mid_ch
+        self.num_layers  = num_layers
+        self.kernel_size = kernel_size
+        self.dec_layers  = [
+            TransConvBNLeaky(
+                out_ch if i == num_layers - 1 else mid_ch,
+                kernel_size, name=f'dec_{i}',
+            )
+            for i in range(num_layers)
+        ]
+
+    def call(self, x, skips, training=False):
+        for i, layer in enumerate(self.dec_layers):
+            x = tf.concat([x, skips[-1 - i]], axis=-1)
+            x = layer(x, training=training)
+        return x
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'out_ch': self.out_ch, 'mid_ch': self.mid_ch,
+                    'num_layers': self.num_layers, 'kernel_size': self.kernel_size})
+        return cfg
+
+
+# ---------------------------------------------------------------------------
+# ResidualUBlock
+# ---------------------------------------------------------------------------
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
+class ResidualUBlock(tf.keras.layers.Layer):
+    """
+    Residual U-Net block for 1-D signals  (B, T, C).
+
+    Args:
+        out_ch:       Input/output channel count.
+        mid_ch:       Hidden channels inside the U-Net arms.
+        layers:       Number of encoder/decoder stages.
+        downsampling: If True, AvgPool + 1×1 Conv applied at the end.
+    """
+
+    def __init__(self, out_ch, mid_ch, layers, downsampling=True, **kwargs):
+        super().__init__(**kwargs)
+        self.out_ch       = out_ch
+        self.mid_ch       = mid_ch
+        self.num_layers   = layers
+        self.downsampling = downsampling
+        K = 9
+
+        self.entry_conv = tf.keras.layers.Conv1D(out_ch, K, padding='same', use_bias=False)
+        self.entry_bn   = tf.keras.layers.BatchNormalization()
+        self.entry_act  = tf.keras.layers.LeakyReLU()
+
+        self.encoder    = UNetEncoder(mid_ch, layers, K)
+        self.bottleneck = ConvBNLeaky(mid_ch, K)
+        self.decoder    = UNetDecoder(out_ch, mid_ch, layers, K)
+
+        if downsampling:
+            self.pool = tf.keras.layers.AveragePooling1D(pool_size=2, strides=2)
+            self.proj = tf.keras.layers.Conv1D(out_ch, kernel_size=1, use_bias=False)
+
+    def call(self, x, training=False):
+        x_in = self.entry_act(self.entry_bn(self.entry_conv(x), training=training))
+
+        enc_out, skips = self.encoder(x_in, training=training)
+        dec_out = self.decoder(
+            self.bottleneck(enc_out, training=training), skips, training=training)
+
+        out = dec_out[:, :tf.shape(x_in)[1], :] + x_in
+
+        if self.downsampling:
+            out = self.proj(self.pool(out))
+
+        return out
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'out_ch': self.out_ch, 'mid_ch': self.mid_ch,
+                    'layers': self.num_layers, 'downsampling': self.downsampling})
+        return cfg
+
+
+# ---------------------------------------------------------------------------
+# Original modules
+# ---------------------------------------------------------------------------
+
+@tf.keras.saving.register_keras_serializable(package='Custom')
 class ChannelAttention(tf.keras.layers.Layer):
     """CBAM channel attention for 1-D feature maps (B, T, C)."""
 
@@ -33,6 +208,7 @@ class ChannelAttention(tf.keras.layers.Layer):
         return cfg
 
 
+@tf.keras.saving.register_keras_serializable(package='Custom')
 class CATNet(tf.keras.layers.Layer):
     """Conv-Attention-LSTM backbone (blocks 1-4 + recurrent)."""
 
@@ -69,3 +245,6 @@ class CATNet(tf.keras.layers.Layer):
         x = self.drop1(x, training=training)
         x = self.lstm2(x, training=training)
         return x
+
+    def get_config(self):
+        return super().get_config()
