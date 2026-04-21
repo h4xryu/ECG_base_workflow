@@ -1,6 +1,11 @@
 import os
 import datetime
 
+# ============================================================
+# Dataset selection: 'mitbih' or 'hicardi'
+# ============================================================
+DATASET_MODE = 'hicardi'  # Change to 'hicardi' for Hicardi multi-label
+
 DATA_ROOT = './mit-bih-arrhythmia-database-1.0.0'
 SAVE_DIR  = './results'
 RECORDS   = os.path.join(DATA_ROOT, 'RECORDS')
@@ -17,12 +22,48 @@ PATIENT_IDS = [
     '222', '223', '228', '230', '231', '232', '233', '234',
 ]
 
-# 15 raw beat labels (AAMI mapping index used in getDataSet)
-BEAT_TYPES  = ['N', 'L', 'R', 'e', 'j', 'A', 'a', 'J', 'S', 'V', 'E', 'F', '/', 'f', 'Q']
-CLASS_NAMES = ['N', 'S', 'V', 'F', 'Q']
-N_CLASSES   = 5
+# ============================================================
+# MIT-BIH Configuration (Multi-class)
+# ============================================================
+MITBIH_BEAT_TYPES  = ['N', 'L', 'R', 'e', 'j', 'A', 'a', 'J', 'S', 'V', 'E', 'F', '/', 'f', 'Q']
+MITBIH_CLASS_NAMES = ['N', 'S', 'V', 'F', 'Q']
+MITBIH_N_CLASSES   = 5
+MITBIH_ACTIVATION  = 'softmax'  # Multi-class
 
-# Training
+# ============================================================
+# Hicardi Configuration (Multi-label)
+# ============================================================
+HICARDI_CLASS_NAMES = [
+    'Normal',
+    'Sinus Tachycardia',
+    'Atrial Premature Contraction',
+    'Atrial Fibrillation/Flutter',
+    'Bradycardia',
+    'Ventricular Premature Contraction',
+    'Trigeminy',
+]
+HICARDI_N_CLASSES   = 7
+HICARDI_ACTIVATION  = 'sigmoid'  # Multi-label
+
+# ============================================================
+# Active configuration (based on DATASET_MODE)
+# ============================================================
+if DATASET_MODE == 'hicardi':
+    CLASS_NAMES     = HICARDI_CLASS_NAMES
+    N_CLASSES       = HICARDI_N_CLASSES
+    ACTIVATION      = HICARDI_ACTIVATION
+    LOSS_TYPE       = 'binary_crossentropy'  # Multi-label
+    MULTI_LABEL     = True
+else:  # 'mitbih'
+    CLASS_NAMES     = MITBIH_CLASS_NAMES
+    N_CLASSES       = MITBIH_N_CLASSES
+    ACTIVATION      = MITBIH_ACTIVATION
+    LOSS_TYPE       = 'sparse_categorical_crossentropy'  # Multi-class
+    MULTI_LABEL     = False
+
+# ============================================================
+# Training (common for both datasets)
+# ============================================================
 EPOCHS           = 1 
 BATCH_SIZE       = 128
 LEARNING_RATE    = 1e-3
@@ -30,7 +71,9 @@ VALIDATION_SPLIT = 0.2
 TEST_SIZE        = 0.2
 RANDOM_SEED      = 104
 
-# Class balancing
+# ============================================================
+# Class balancing (MIT-BIH only)
+# ============================================================
 N_UNDERSAMPLE = 50_000   # class-0 target after undersampling
 SMOTE_TARGET  = 50_000   # classes 1-4 target after SMOTE
 
@@ -41,11 +84,15 @@ OPTIMIZER_NAME = 'adam'
 LOSS_NAME      = 'sparse_ce'
 SCHEDULER_NAME = 'none'
 
-# Class colours
-CLASS_COLORS = {
+# ============================================================
+# Class colours (MIT-BIH)
+# ============================================================
+MITBIH_CLASS_COLORS = {
     'N': '#BF878C', 'S': '#8CCF97',
     'V': '#8AB0BF', 'F': '#BFBF8C', 'Q': '#A88DAA',
 }
+
+CLASS_COLORS = MITBIH_CLASS_COLORS  # Default to MIT-BIH
 
 
 def get_exp_name() -> str:

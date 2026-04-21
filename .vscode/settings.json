@@ -1,0 +1,15 @@
+{
+    "python.defaultInterpreterPath": "/usr/bin/python3",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.defaultProfile.windows": "WSL",
+    "terminal.integrated.profiles.windows": {
+        "WSL": {
+            "path": "wsl.exe",
+            "args": []
+        }
+    },
+    "python.terminal.launchArgs": [],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.python"
+    }
+}

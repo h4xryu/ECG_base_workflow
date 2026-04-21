@@ -1,12 +1,14 @@
 import tensorflow as tf
 
+keras = tf.keras
+
 
 # ---------------------------------------------------------------------------
 # Primitive building blocks
 # ---------------------------------------------------------------------------
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class ConvBNLeaky(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class ConvBNLeaky(keras.layers.Layer):
     """Conv1D → BatchNormalization → LeakyReLU  (B, T, C)."""
 
     def __init__(self, filters, kernel_size=9, strides=1, **kwargs):
@@ -29,8 +31,8 @@ class ConvBNLeaky(tf.keras.layers.Layer):
         return cfg
 
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class TransConvBNLeaky(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class TransConvBNLeaky(keras.layers.Layer):
     """Conv1DTranspose → BatchNormalization → LeakyReLU  (B, T, C)."""
 
     def __init__(self, filters, kernel_size=9, **kwargs):
@@ -55,8 +57,8 @@ class TransConvBNLeaky(tf.keras.layers.Layer):
 # U-Net encoder / decoder stacks
 # ---------------------------------------------------------------------------
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class UNetEncoder(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class UNetEncoder(keras.layers.Layer):
     """Strided-conv encoder; returns (output, skip_list)."""
 
     def __init__(self, mid_ch, num_layers, kernel_size=9, **kwargs):
@@ -83,8 +85,8 @@ class UNetEncoder(tf.keras.layers.Layer):
         return cfg
 
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class UNetDecoder(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class UNetDecoder(keras.layers.Layer):
     """Transposed-conv decoder consuming skip connections from the encoder."""
 
     def __init__(self, out_ch, mid_ch, num_layers, kernel_size=9, **kwargs):
@@ -103,7 +105,9 @@ class UNetDecoder(tf.keras.layers.Layer):
 
     def call(self, x, skips, training=False):
         for i, layer in enumerate(self.dec_layers):
-            x = tf.concat([x, skips[-1 - i]], axis=-1)
+            skip = skips[-1 - i]
+            x = x[:, :tf.shape(skip)[1], :]
+            x = tf.concat([x, skip], axis=-1)
             x = layer(x, training=training)
         return x
 
@@ -118,8 +122,8 @@ class UNetDecoder(tf.keras.layers.Layer):
 # ResidualUBlock
 # ---------------------------------------------------------------------------
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class ResidualUBlock(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class ResidualUBlock(keras.layers.Layer):
     """
     Residual U-Net block for 1-D signals  (B, T, C).
 
@@ -175,8 +179,8 @@ class ResidualUBlock(tf.keras.layers.Layer):
 # Original modules
 # ---------------------------------------------------------------------------
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class ChannelAttention(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class ChannelAttention(keras.layers.Layer):
     """CBAM channel attention for 1-D feature maps (B, T, C)."""
 
     def __init__(self, filters, ratio, **kwargs):
@@ -208,8 +212,8 @@ class ChannelAttention(tf.keras.layers.Layer):
         return cfg
 
 
-@tf.keras.saving.register_keras_serializable(package='Custom')
-class CATNet(tf.keras.layers.Layer):
+@keras.saving.register_keras_serializable(package='Custom')
+class CATNet(keras.layers.Layer):
     """Conv-Attention-LSTM backbone (blocks 1-4 + recurrent)."""
 
     def __init__(self, **kwargs):

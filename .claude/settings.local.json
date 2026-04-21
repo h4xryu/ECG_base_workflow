@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(\"D:/anaconda/python.exe\" -m pip install tensorflow)",
-      "Bash(\"D:/anaconda/python.exe\" -m pip install tensorboardX Pillow openpyxl scipy)"
+      "Bash(\"D:/anaconda/python.exe\" -m pip install tensorboardX Pillow openpyxl scipy)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(D:\\\\anaconda\\\\python.exe -m pip install tensorflow[and-cuda])",
+      "Bash(pip --version)",
+      "Bash(pip install *)",
+      "Bash(pip show *)",
+      "Bash(wsl.exe --list --online)",
+      "Read(//mnt/c/Users/zwing/anaconda3/**)",
+      "Read(//mnt/c/ProgramData/anaconda3/**)",
+      "Bash(pip list *)",
+      "Bash(python3 -m pip list --format=freeze)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

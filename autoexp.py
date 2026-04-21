@@ -361,14 +361,8 @@ def main():
 
     results = []
 
-    # 1. FP32  (훈련 생략 — 고정 가중치 로드)
-    # fp_model, fp_acc, fp_f1 = run_fp32(X_train, y_train, X_test, y_test)
-    print('\n[1/4] FP32 baseline (skip training — loading saved weights)')
-    fp_model = build_model()
-    fp_model.compile(optimizer=get_optimizer(), loss=get_loss(), metrics=['accuracy'])
-    fp_model.load_weights(FP32_WEIGHTS)
-    fp_acc, fp_f1, _ = _eval_keras(fp_model, X_test, y_test)
-    print(f'  FP32  acc={fp_acc*100:.2f}%  f1={fp_f1*100:.2f}%')
+    # 1. FP32
+    fp_model, fp_acc, fp_f1 = run_fp32(X_train, y_train, X_test, y_test)
     results.append(('FP32', fp_acc, fp_f1))
 
     # 2. QAT
