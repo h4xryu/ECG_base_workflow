@@ -20,6 +20,7 @@ history = trainer.fit(X_tr, y_tr, X_val, y_val,
 
 import numpy as np
 import tensorflow as tf
+import config
 
 
 # ── Keras-compatible history object ──────────────────────────────────────────
@@ -53,6 +54,8 @@ class Trainer:
 
     @tf.function
     def train_step(self, X_batch, y_batch):
+        if config.MULTI_LABEL:
+            y_batch = tf.cast(y_batch > 0, tf.float32)
         with tf.GradientTape() as tape:
             probs = self.model(X_batch, training=True)
             loss  = self.loss_fn(y_batch, probs)
@@ -62,6 +65,8 @@ class Trainer:
 
     @tf.function
     def val_step(self, X_batch, y_batch):
+        if config.MULTI_LABEL:
+            y_batch = tf.cast(y_batch > 0, tf.float32)
         probs = self.model(X_batch, training=False)
         loss  = self.loss_fn(y_batch, probs)
         return loss, probs
@@ -109,12 +114,17 @@ class Trainer:
             # ── Train ─────────────────────────────────────────────────────
             tr_loss_sum, tr_correct, tr_total = 0.0, 0, 0
             for Xb, yb in tr_ds:
-                loss, probs   = self.train_step(Xb, yb)
-                n              = len(Xb)
-                tr_loss_sum   += float(loss) * n
-                tr_correct    += int(tf.reduce_sum(
-                    tf.cast(tf.argmax(probs, 1) == tf.cast(yb, tf.int64), tf.int32)))
-                tr_total      += n
+                loss, probs = self.train_step(Xb, yb)
+                n            = len(Xb)
+                tr_loss_sum += float(loss) * n
+                if config.MULTI_LABEL:
+                    preds_b  = (probs.numpy() > 0.5).astype(int)
+                    yb_np    = yb.numpy().astype(int)
+                    tr_correct += int(np.sum(np.all(preds_b == yb_np, axis=1)))
+                else:
+                    tr_correct += int(tf.reduce_sum(
+                        tf.cast(tf.argmax(probs, 1) == tf.cast(yb, tf.int64), tf.int32)))
+                tr_total += n
 
             # ── Validation ────────────────────────────────────────────────
             vl_loss_sum, vl_correct, vl_total = 0.0, 0, 0
@@ -122,14 +132,20 @@ class Trainer:
             for Xb, yb in vl_ds:
                 loss, probs = self.val_step(Xb, yb)
                 proba        = probs.numpy()
-                n             = len(Xb)
-                vl_loss_sum  += float(loss) * n
-                vl_correct   += int(tf.reduce_sum(
-                    tf.cast(tf.argmax(probs, 1) == tf.cast(yb, tf.int64), tf.int32)))
-                vl_total     += n
-                all_preds.extend(np.argmax(proba, axis=-1))
+                yb_np        = yb.numpy().astype(int)
+                n            = len(Xb)
+                vl_loss_sum += float(loss) * n
+                if config.MULTI_LABEL:
+                    preds_b  = (proba > 0.5).astype(int)
+                    vl_correct += int(np.sum(np.all(preds_b == yb_np, axis=1)))
+                    all_preds.extend(preds_b)
+                else:
+                    vl_correct += int(tf.reduce_sum(
+                        tf.cast(tf.argmax(probs, 1) == tf.cast(yb, tf.int64), tf.int32)))
+                    all_preds.extend(np.argmax(proba, axis=-1))
+                vl_total    += n
                 all_proba.extend(proba)
-                all_true.extend(yb.numpy().astype(int))
+                all_true.extend(yb_np)
 
             tr_loss = tr_loss_sum / tr_total;  tr_acc = tr_correct / tr_total
             vl_loss = vl_loss_sum / vl_total;  vl_acc = vl_correct / vl_total

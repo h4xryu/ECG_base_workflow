@@ -91,6 +91,30 @@ def plot_confusion_matrix(y_true, y_pred, exp_dir: str) -> np.ndarray:
     return cm
 
 
+def plot_confusion_matrix_multilabel(y_true, y_pred, exp_dir: str) -> list:
+    """Per-label binary confusion matrices for multi-label classification."""
+    n  = config.N_CLASSES
+    nc = min(n, 3)
+    nr = (n + nc - 1) // nc
+    fig, axes = plt.subplots(nr, nc, figsize=(nc * 4, nr * 3.5))
+    axes = np.array(axes).reshape(-1)
+    cms = []
+    for i, name in enumerate(config.CLASS_NAMES):
+        cm_i = confusion_matrix(y_true[:, i], y_pred[:, i], labels=[0, 1])
+        cms.append(cm_i)
+        seaborn.heatmap(cm_i, annot=True, fmt='d', cmap='Blues',
+                        xticklabels=['Neg', 'Pos'],
+                        yticklabels=['Neg', 'Pos'], ax=axes[i])
+        axes[i].set_title(name, fontsize=9)
+        axes[i].set_xlabel('Predicted'); axes[i].set_ylabel('True')
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+    plt.tight_layout()
+    fig.savefig(os.path.join(exp_dir, 'confusion_matrix.png'), dpi=150)
+    plt.close(fig)
+    return cms
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Excel export
 # ─────────────────────────────────────────────────────────────────────────────
@@ -206,11 +230,57 @@ def _create_confusion_matrix_sheet(wb, cm: np.ndarray):
         ws.column_dimensions[get_column_letter(col)].width = 12
 
 
-def save_excel(metrics: dict, cm: np.ndarray, exp_name: str, exp_dir: str):
+def _create_performance_sheet_multilabel(wb, metrics: dict, exp_name: str):
+    ws      = wb.create_sheet('Performance Metrics', 0)
+    classes = config.CLASS_NAMES
+
+    headers = ['Experiment', 'Subset Acc', 'Hamming Loss',
+               'Macro Pr', 'Macro Re', 'Macro F1',
+               'Micro Pr', 'Micro Re', 'Micro F1',
+               'W Pr',     'W Re',     'W F1']
+    for ci, h in enumerate(headers, 1):
+        _c(ws, 1, ci, h, _H_FILL, _H_FONT)
+
+    col = len(headers) + 1
+    for name in classes:
+        ws.merge_cells(start_row=1, start_column=col, end_row=1, end_column=col + 3)
+        _c(ws, 1, col, name, _H_FILL, _H_FONT)
+        for j, sub in enumerate(['Pr', 'Re', 'F1', 'AUC']):
+            _c(ws, 2, col + j, sub, _SH_FILL, _SH_FONT)
+        col += 4
+
+    r = 3
+    _c(ws, r, 1, exp_name)
+    summary = [
+        metrics['subset_accuracy'], metrics['hamming_loss'],
+        metrics['macro_precision'],  metrics['macro_recall'],  metrics['macro_f1'],
+        metrics['micro_precision'],  metrics['micro_recall'],  metrics['micro_f1'],
+        metrics['w_precision'],      metrics['w_recall'],      metrics['w_f1'],
+    ]
+    for ci, v in enumerate(summary, 2):
+        _c(ws, r, ci, round(v * 100, 2)).number_format = '0.00'
+
+    col = len(headers) + 1
+    for i in range(len(classes)):
+        auc = metrics['per_label_auc'][i] if metrics['per_label_auc'] else 0.0
+        for j, v in enumerate([metrics['pc_precision'][i], metrics['pc_recall'][i],
+                                metrics['pc_f1'][i], auc]):
+            _c(ws, r, col + j, round(v * 100, 2)).number_format = '0.00'
+        col += 4
+
+    ws.column_dimensions['A'].width = 35
+    for c in range(2, col):
+        ws.column_dimensions[get_column_letter(c)].width = 10
+
+
+def save_excel(metrics: dict, cm, exp_name: str, exp_dir: str):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    _create_performance_sheet(wb, metrics, exp_name)
-    _create_confusion_matrix_sheet(wb, cm)
+    if config.MULTI_LABEL:
+        _create_performance_sheet_multilabel(wb, metrics, exp_name)
+    else:
+        _create_performance_sheet(wb, metrics, exp_name)
+        _create_confusion_matrix_sheet(wb, cm)
     path = os.path.join(exp_dir, f'{exp_name}.xlsx')
     wb.save(path)
     print(f'Excel  saved → {path}')
@@ -238,24 +308,46 @@ def full_eval(model, X_train, y_train, X_test, y_test,
     print(f'\n── Evaluating: {exp_name} ──')
 
     y_proba = model.predict(X_test, verbose=0)
-    y_pred  = np.argmax(y_proba, axis=-1)
 
-    metrics = compute_metrics(y_test.astype(int), y_pred, y_proba)
-    cm      = plot_confusion_matrix(y_test, y_pred, exp_dir)
+    if config.MULTI_LABEL:
+        y_true  = (y_test > 0).astype(int)
+        y_pred  = (y_proba > 0.5).astype(int)
+        metrics = compute_metrics(y_true, y_pred, y_proba)
+        cm      = plot_confusion_matrix_multilabel(y_true, y_pred, exp_dir)
 
-    plot_history(history, exp_dir)
-    save_excel(metrics, cm, exp_name, exp_dir)
-    save_weights(model, exp_dir)
+        plot_history(history, exp_dir)
+        save_excel(metrics, cm, exp_name, exp_dir)
+        save_weights(model, exp_dir)
 
-    if config.TSNE_ENABLED:
-        save_tsne_data(model, X_test, y_test.astype(int), y_pred, y_proba, exp_dir)
+        if config.TSNE_ENABLED:
+            tsne_labels = np.argmax(y_true, axis=-1)
+            tsne_preds  = np.argmax(y_pred, axis=-1)
+            save_tsne_data(model, X_test, tsne_labels, tsne_preds, y_proba, exp_dir)
 
-    # Console summary
-    print(f"  Overall Acc : {metrics['acc']*100:.2f}%")
-    print(f"  Macro  F1   : {metrics['macro_f1']*100:.2f}%")
-    for i, name in enumerate(config.CLASS_NAMES):
-        print(f"  {name}  Se={metrics['pc_se'][i]*100:.1f}% "
-              f"Sp={metrics['pc_sp'][i]*100:.1f}% "
-              f"F1={metrics['pc_f1'][i]*100:.1f}%")
+        print(f"  Subset Acc  : {metrics['subset_accuracy']*100:.2f}%")
+        print(f"  Hamming Loss: {metrics['hamming_loss']*100:.4f}")
+        print(f"  Macro  F1   : {metrics['macro_f1']*100:.2f}%")
+        for i, name in enumerate(config.CLASS_NAMES):
+            print(f"  {name}  Pr={metrics['pc_precision'][i]*100:.1f}% "
+                  f"Re={metrics['pc_recall'][i]*100:.1f}% "
+                  f"F1={metrics['pc_f1'][i]*100:.1f}%")
+    else:
+        y_pred  = np.argmax(y_proba, axis=-1)
+        metrics = compute_metrics(y_test.astype(int), y_pred, y_proba)
+        cm      = plot_confusion_matrix(y_test, y_pred, exp_dir)
+
+        plot_history(history, exp_dir)
+        save_excel(metrics, cm, exp_name, exp_dir)
+        save_weights(model, exp_dir)
+
+        if config.TSNE_ENABLED:
+            save_tsne_data(model, X_test, y_test.astype(int), y_pred, y_proba, exp_dir)
+
+        print(f"  Overall Acc : {metrics['acc']*100:.2f}%")
+        print(f"  Macro  F1   : {metrics['macro_f1']*100:.2f}%")
+        for i, name in enumerate(config.CLASS_NAMES):
+            print(f"  {name}  Se={metrics['pc_se'][i]*100:.1f}% "
+                  f"Sp={metrics['pc_sp'][i]*100:.1f}% "
+                  f"F1={metrics['pc_f1'][i]*100:.1f}%")
 
     return metrics

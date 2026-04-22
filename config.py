@@ -6,13 +6,17 @@ import datetime
 # ============================================================
 DATASET_MODE = 'hicardi'  # Change to 'hicardi' for Hicardi multi-label
 
-DATA_ROOT = './mit-bih-arrhythmia-database-1.0.0'
+DATA_ROOT = './Holter01_Local_Clinic_124_records_temp'
 SAVE_DIR  = './results'
 RECORDS   = os.path.join(DATA_ROOT, 'RECORDS')
 
 WINDOW_LEFT  = 99
 WINDOW_RIGHT = 201
-WINDOW_SIZE  = WINDOW_LEFT + WINDOW_RIGHT   # 300
+WINDOW_SIZE  = WINDOW_LEFT + WINDOW_RIGHT   # 300  (MIT-BIH single-beat)
+
+# Hicardi 4-beat window (200 Hz × 4 s)
+HICARDI_FS          = 200
+HICARDI_WINDOW_SIZE = int(HICARDI_FS * 4)  # 800
 
 PATIENT_IDS = [
     '100', '101', '102', '103', '104', '105', '106', '107', '108', '109',
@@ -33,16 +37,21 @@ MITBIH_ACTIVATION  = 'softmax'  # Multi-class
 # ============================================================
 # Hicardi Configuration (Multi-label)
 # ============================================================
+# Column indices into final_flag (matches Table 1 label numbers)
+HICARDI_TARGET_LABELS = [0, 2, 3, 5, 6, 8, 12, 14, 16]
+
 HICARDI_CLASS_NAMES = [
-    'Normal',
-    'Sinus Tachycardia',
-    'Atrial Premature Contraction',
-    'Atrial Fibrillation/Flutter',
-    'Bradycardia',
-    'Ventricular Premature Contraction',
-    'Trigeminy',
+    'Normal',                        # label  0
+    'Ventricular Fib./Tach.',        # label  2
+    'VPC',                           # label  3 — Ventricular Premature Contraction
+    'Ventricular Bigeminy',          # label  5
+    'Ventricular Trigeminy',         # label  6
+    'Bradycardia',                   # label  8
+    'Atrial Fib./Flutter',           # label 12
+    'Atrial Premature Contraction',  # label 14
+    'Sinus Tachycardia',             # label 16
 ]
-HICARDI_N_CLASSES   = 7
+HICARDI_N_CLASSES   = 9
 HICARDI_ACTIVATION  = 'sigmoid'  # Multi-label
 
 # ============================================================
@@ -92,7 +101,19 @@ MITBIH_CLASS_COLORS = {
     'V': '#8AB0BF', 'F': '#BFBF8C', 'Q': '#A88DAA',
 }
 
-CLASS_COLORS = MITBIH_CLASS_COLORS  # Default to MIT-BIH
+HICARDI_CLASS_COLORS = {
+    'Normal':                        '#BF878C',
+    'Ventricular Fib./Tach.':        '#8AB0BF',
+    'VPC':                           '#8CCF97',
+    'Ventricular Bigeminy':          '#BFBF8C',
+    'Ventricular Trigeminy':         '#A88DAA',
+    'Bradycardia':                   '#CF9F8C',
+    'Atrial Fib./Flutter':           '#8CBFBF',
+    'Atrial Premature Contraction':  '#BFA88C',
+    'Sinus Tachycardia':             '#A8BF8C',
+}
+
+CLASS_COLORS = HICARDI_CLASS_COLORS if DATASET_MODE == 'hicardi' else MITBIH_CLASS_COLORS
 
 
 def get_exp_name() -> str:

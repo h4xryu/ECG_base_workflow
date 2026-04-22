@@ -57,10 +57,16 @@ class TrainingLogger:
     def log_epoch(self, epoch: int, loss: float, metrics: dict, phase: str = 'train'):
         """Full per-epoch logging including all sklearn metrics."""
         p = phase.capitalize()
-        self.writer.add_scalar(f'{p}/Loss',             loss,                  epoch)
-        self.writer.add_scalar(f'{p}/Accuracy/overall', metrics['acc'],        epoch)
+        self.writer.add_scalar(f'{p}/Loss', loss, epoch)
 
-        # Macro
+        if config.MULTI_LABEL:
+            self._log_epoch_multilabel(epoch, p, metrics)
+        else:
+            self._log_epoch_multiclass(epoch, p, metrics)
+
+    def _log_epoch_multiclass(self, epoch: int, p: str, metrics: dict):
+        self.writer.add_scalar(f'{p}/Accuracy/overall', metrics['acc'], epoch)
+
         for key, tag in [('macro_precision',   'Macro/Precision'),
                          ('macro_recall',      'Macro/Recall'),
                          ('macro_f1',          'Macro/F1'),
@@ -69,7 +75,6 @@ class TrainingLogger:
                          ('macro_auprc',       'Macro/AUPRC')]:
             self.writer.add_scalar(f'{p}/{tag}', metrics[key], epoch)
 
-        # Weighted
         for key, tag in [('w_precision',   'Weighted/Precision'),
                          ('w_recall',      'Weighted/Recall'),
                          ('w_f1',          'Weighted/F1'),
@@ -78,13 +83,34 @@ class TrainingLogger:
                          ('w_auprc',       'Weighted/AUPRC')]:
             self.writer.add_scalar(f'{p}/{tag}', metrics[key], epoch)
 
-        # Per-class
         for i, name in enumerate(config.CLASS_NAMES):
             self.writer.add_scalar(f'{p}/PerClass/{name}/Accuracy',    metrics['pc_acc'][i], epoch)
             self.writer.add_scalar(f'{p}/PerClass/{name}/Sensitivity', metrics['pc_se'][i],  epoch)
             self.writer.add_scalar(f'{p}/PerClass/{name}/Specificity', metrics['pc_sp'][i],  epoch)
             self.writer.add_scalar(f'{p}/PerClass/{name}/Precision',   metrics['pc_pr'][i],  epoch)
             self.writer.add_scalar(f'{p}/PerClass/{name}/F1',          metrics['pc_f1'][i],  epoch)
+
+    def _log_epoch_multilabel(self, epoch: int, p: str, metrics: dict):
+        self.writer.add_scalar(f'{p}/Accuracy/subset_exact', metrics['subset_accuracy'], epoch)
+        self.writer.add_scalar(f'{p}/HammingLoss',           metrics['hamming_loss'],    epoch)
+
+        for key, tag in [('macro_precision', 'Macro/Precision'),
+                         ('macro_recall',    'Macro/Recall'),
+                         ('macro_f1',        'Macro/F1'),
+                         ('micro_precision', 'Micro/Precision'),
+                         ('micro_recall',    'Micro/Recall'),
+                         ('micro_f1',        'Micro/F1'),
+                         ('w_precision',     'Weighted/Precision'),
+                         ('w_recall',        'Weighted/Recall'),
+                         ('w_f1',            'Weighted/F1')]:
+            self.writer.add_scalar(f'{p}/{tag}', metrics[key], epoch)
+
+        for i, name in enumerate(config.CLASS_NAMES):
+            self.writer.add_scalar(f'{p}/PerClass/{name}/Precision', metrics['pc_precision'][i], epoch)
+            self.writer.add_scalar(f'{p}/PerClass/{name}/Recall',    metrics['pc_recall'][i],    epoch)
+            self.writer.add_scalar(f'{p}/PerClass/{name}/F1',        metrics['pc_f1'][i],        epoch)
+            if metrics['per_label_auc']:
+                self.writer.add_scalar(f'{p}/PerClass/{name}/AUROC', metrics['per_label_auc'][i], epoch)
 
     # ── Weight histograms ─────────────────────────────────────────────────────
 
@@ -127,11 +153,19 @@ class TrainingLogger:
         fig.patch.set_facecolor('#1a1a2e')
         if n == 1:
             axes = [axes]
+        colors_list = list(config.CLASS_COLORS.values())
         for i in range(n):
-            color = list(config.CLASS_COLORS.values())[int(labels[i])]
+            lbl = labels[i]
+            if np.ndim(lbl) > 0:  # multi-label: binary vector
+                active = np.where(np.asarray(lbl) > 0.5)[0]
+                title = ', '.join(config.CLASS_NAMES[j] for j in active) if len(active) else 'None'
+                color = colors_list[active[0] % len(colors_list)] if len(active) else colors_list[0]
+            else:  # single-label: scalar index
+                idx = int(lbl)
+                title = config.CLASS_NAMES[idx]
+                color = colors_list[idx % len(colors_list)]
             axes[i].plot(signals[i], linewidth=0.9, color=color)
-            axes[i].set_title(config.CLASS_NAMES[int(labels[i])],
-                              color='white', fontsize=8)
+            axes[i].set_title(title, color='white', fontsize=8)
             axes[i].set_facecolor('#16213e')
             axes[i].tick_params(colors='#888888', labelsize=7)
         plt.tight_layout()

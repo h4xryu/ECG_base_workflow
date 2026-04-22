@@ -14,7 +14,7 @@ from PyQt5.QtCore import pyqtSignal
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 import matplotlib.pyplot as plt
 
-from constants import CLASS_COLORS, CLASS_COLORS_LIST, CLASS_NAMES
+from constants import CLASS_COLORS, CLASS_COLORS_LIST, CLASS_NAMES, N_CLASSES
 
 _BG_OUTER = '#1a1a2e'
 _BG_INNER = '#16213e'
@@ -50,7 +50,7 @@ class TSNECanvas(FigureCanvasQTAgg):
         self._emb    = emb
         self._kdtree = KDTree(emb)
 
-        for cls_id in range(5):
+        for cls_id in range(N_CLASSES):
             mask = labels == cls_id
             if not mask.any():
                 continue

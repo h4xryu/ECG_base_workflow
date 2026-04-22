@@ -1,16 +1,19 @@
 import os
+import sys
 
-CLASS_NAMES  = ['N', 'S', 'V', 'F', 'Q']
-CLASS_COLORS = {
-    0: '#BF878C',  # N
-    1: '#8CCF97',  # S
-    2: '#8AB0BF',  # V
-    3: '#BFBF8C',  # F
-    4: '#A88DAA',  # Q
-}
-CLASS_COLORS_LIST = [CLASS_COLORS[i] for i in range(5)]
+# parent directory (Classification_workflow/) → import config
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
+import config
 
-# Results root = ../results relative to this file's directory
+CLASS_NAMES  = config.CLASS_NAMES
+N_CLASSES    = config.N_CLASSES
+MULTI_LABEL  = config.MULTI_LABEL
+
+# Build color list from config (MIT-BIH or Hicardi)
+_color_values    = list(config.CLASS_COLORS.values())
+CLASS_COLORS     = {i: _color_values[i] for i in range(N_CLASSES)}
+CLASS_COLORS_LIST= _color_values
+
 RESULTS_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', 'results')
 )

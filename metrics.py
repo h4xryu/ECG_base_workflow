@@ -93,8 +93,8 @@ def _compute_metrics_multiclass(y_true: np.ndarray, y_pred: np.ndarray, y_proba:
 
 def _compute_metrics_multilabel(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray = None) -> dict:
     """Metrics for multi-label classification (Hicardi)."""
-    y_true = y_true.astype(int)
-    y_pred = y_pred.astype(int)
+    y_true = (y_true > 0).astype(int)   # guard against cached non-binary labels
+    y_pred = (y_pred > 0).astype(int)
     n      = config.N_CLASSES
     
     # Subset accuracy (exact match)
