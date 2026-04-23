@@ -3,8 +3,10 @@ import pywt
 import wfdb
 from os.path import join as osj
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.interpolate import interp1d
 import mat73
+from tqdm import tqdm
 import config
 
 
@@ -61,10 +63,21 @@ def _extract_4beat_segments_from_mat(mat_data):
     if len(r_peaks) < 5:
         return [], []
 
+    pre  = config.HICARDI_PRE
+    post = config.HICARDI_POST
+    sig_len = len(ecg_mv)
+
     segments, labels = [], []
     for i in range(0, len(r_peaks) - 4, 4):
-        start_idx = r_peaks[i]
-        end_idx   = r_peaks[i + 4]
+        r_start = r_peaks[i]
+        r_end   = r_peaks[i + 4]
+
+        start_idx = r_start - pre
+        end_idx   = r_end   + post
+
+        # skip boundary segments
+        if start_idx < 0 or end_idx > sig_len:
+            continue
 
         if np.any(LeadOff[start_idx:end_idx]) or np.any(data_lost[start_idx:end_idx]):
             continue
@@ -93,32 +106,168 @@ def _extract_4beat_segments_from_mat(mat_data):
     return segments, labels
 
 
-def load_holter_mat(data_root=None):
-    """Load all .mat files from a Holter directory and extract 4-beat segments."""
+def _load_single_mat(mat_path_str):
+    """Load one .mat file and extract segments. Top-level so it's picklable."""
+    try:
+        mat_data = mat73.loadmat(mat_path_str)
+        segs, lbls = _extract_4beat_segments_from_mat(mat_data)
+        return segs, lbls, None
+    except Exception as e:
+        return [], [], str(e)
+
+
+def load_holter_mat(data_root=None, n_workers=2, flush_threshold=20000, flush_every_files=30):
+    """Load all .mat files under data_root in parallel and extract 4-beat segments.
+
+    Memory-safe behavior:
+      - Default `n_workers` reduced to 2 to limit concurrent memory usage.
+      - Accumulated segments are flushed to chunk files when they exceed
+        `flush_threshold` to avoid holding too much in RAM.
+      - At the end all chunks are merged into a memory-mapped output file
+        which is returned as numpy arrays (safe for large datasets).
+    """
     data_root = Path(data_root or config.DATA_ROOT)
-    mat_files = sorted(data_root.glob('*.mat'))
+    mat_files = sorted(data_root.rglob('*.mat'))
 
     if not mat_files:
         raise FileNotFoundError(f"No .mat files found in {data_root}")
 
-    all_segments, all_labels = [], []
-    for mat_file in mat_files:
-        try:
-            mat_data = mat73.loadmat(str(mat_file))
-            segs, lbls = _extract_4beat_segments_from_mat(mat_data)
-            all_segments.extend(segs)
-            all_labels.extend(lbls)
-        except Exception as e:
-            print(f"  Warning: skipping {mat_file.name} — {e}")
+    n_workers = min(max(1, int(n_workers)), len(mat_files))
+    print(f"[load_holter_mat] {len(mat_files)} files — {n_workers} threads")
 
-    if not all_segments:
+    chunks_dir = data_root / '.chunks_tmp'
+    chunks_dir.mkdir(exist_ok=True)
+    chunk_idx = 0
+    all_segments, all_labels = [], []
+    n_skipped = 0
+    total_count = 0
+
+    files_since_flush = 0
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_load_single_mat, str(f)): f for f in mat_files}
+        with tqdm(total=len(mat_files), desc='MAT loading', unit='file', dynamic_ncols=True) as pbar:
+            for future in as_completed(futures):
+                segs, lbls, err = future.result()
+                if err is not None:
+                    n_skipped += 1
+                    pbar.write(f"  skip {futures[future].name}: {err}")
+                else:
+                    if segs:
+                        all_segments.extend(segs)
+                        all_labels.extend(lbls)
+                        total_count += len(segs)
+                        files_since_flush += 1
+
+                # Flush if accumulated too large OR we've processed a fixed number of files
+                if len(all_segments) >= flush_threshold or (flush_every_files and files_since_flush >= flush_every_files):
+                    seg_arr = np.array(all_segments, dtype=np.float32)
+                    lbl_arr = np.array(all_labels, dtype=np.float32)
+                    np.save(chunks_dir / f'chunk_segs_{chunk_idx}.npy', seg_arr)
+                    np.save(chunks_dir / f'chunk_lbls_{chunk_idx}.npy', lbl_arr)
+                    chunk_idx += 1
+                    all_segments.clear()
+                    all_labels.clear()
+                    files_since_flush = 0
+
+                pbar.update(1)
+                pbar.set_postfix(segs=total_count, skip=n_skipped)
+
+    # If nothing extracted
+    if total_count == 0 and not (all_segments):
         raise RuntimeError("No valid segments extracted from any .mat file.")
 
-    X = np.array(all_segments, dtype=np.float32)
-    Y = np.array(all_labels,   dtype=np.float32)
+    # Write final chunk if any remaining
+    if all_segments:
+        seg_arr = np.array(all_segments, dtype=np.float32)
+        lbl_arr = np.array(all_labels, dtype=np.float32)
+        np.save(chunks_dir / f'chunk_segs_{chunk_idx}.npy', seg_arr)
+        np.save(chunks_dir / f'chunk_lbls_{chunk_idx}.npy', lbl_arr)
+        chunk_idx += 1
+        all_segments.clear(); all_labels.clear()
 
-    perm = np.random.permutation(len(X))
-    return X[perm], Y[perm]
+    # Merge chunks into a memory-mapped final array to avoid large RAM peaks
+    chunk_files = sorted(chunks_dir.glob('chunk_segs_*.npy'))
+    total_count = 0
+    chunk_sizes = []
+    for cf in chunk_files:
+        arr = np.load(cf, mmap_mode='r')
+        chunk_sizes.append(arr.shape[0])
+        total_count += arr.shape[0]
+
+    lbl_files = sorted(chunks_dir.glob('chunk_lbls_*.npy'))
+    if len(lbl_files) != len(chunk_files):
+        raise RuntimeError('Chunk labels/files mismatch')
+
+    # allocate memmap outputs in data_root
+    out_segs = data_root / 'hicardi_segments.npy'
+    out_lbls = data_root / 'hicardi_labels.npy'
+    # infer shapes
+    sample_len = config.HICARDI_WINDOW_SIZE
+    n_labels = len(config.HICARDI_TARGET_LABELS)
+
+    seg_mm = np.lib.format.open_memmap(str(out_segs), mode='w+', dtype=np.float32,
+                                       shape=(total_count, sample_len))
+    lbl_mm = np.lib.format.open_memmap(str(out_lbls), mode='w+', dtype=np.float32,
+                                       shape=(total_count, n_labels))
+
+    ptr = 0
+    for s_cf, l_cf in zip(chunk_files, lbl_files):
+        s = np.load(s_cf)
+        l = np.load(l_cf)
+        n = s.shape[0]
+        seg_mm[ptr:ptr+n] = s.astype(np.float32)
+        lbl_mm[ptr:ptr+n] = l.astype(np.float32)
+        ptr += n
+
+    # cleanup chunk files
+    for f in chunk_files + lbl_files:
+        try:
+            f.unlink()
+        except Exception:
+            pass
+    try:
+        chunks_dir.rmdir()
+    except Exception:
+        pass
+
+    # shuffle indices by writing a permuted view into final files to avoid large RAM copies.
+    perm = np.random.permutation(total_count)
+
+    # create final permuted memmap files (overwrite existing out_segs/out_lbls)
+    out_segs_perm = data_root / 'hicardi_segments.npy'
+    out_lbls_perm = data_root / 'hicardi_labels.npy'
+
+    perm_segs = np.lib.format.open_memmap(str(out_segs_perm), mode='w+', dtype=np.float32,
+                                          shape=(total_count, sample_len))
+    perm_lbls = np.lib.format.open_memmap(str(out_lbls_perm), mode='w+', dtype=np.float32,
+                                          shape=(total_count, n_labels))
+
+    # write permuted blocks in streaming manner
+    block = 0
+    block_size = 10_000
+    for start in range(0, total_count, block_size):
+        end = min(start + block_size, total_count)
+        idx = perm[start:end]
+        perm_segs[start:end] = seg_mm[idx]
+        perm_lbls[start:end] = lbl_mm[idx]
+        block += 1
+
+    # flush and close
+    try:
+        perm_segs._mmap.flush()
+        perm_lbls._mmap.flush()
+    except Exception:
+        pass
+
+    # close original memmaps
+    try:
+        seg_mm._mmap.close()
+        lbl_mm._mmap.close()
+    except Exception:
+        pass
+
+    # Return paths to the final on-disk memmap files to avoid copying large arrays in memory
+    return str(out_segs_perm), str(out_lbls_perm)
 
 
 # ── Full dataset loading (15-class labels) ────────────────────────────────────

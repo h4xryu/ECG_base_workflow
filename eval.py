@@ -40,23 +40,38 @@ def _extract_features(model, X: np.ndarray) -> np.ndarray:
     return feat_model.predict(X, verbose=0)
 
 
-def save_tsne_data(model, X_test: np.ndarray, y_test: np.ndarray,
-                   y_pred: np.ndarray, y_proba: np.ndarray, exp_dir: str):
-    print('Running t-SNE…')
-    n   = min(len(X_test), config.TSNE_MAX_SAMPLES)
-    idx = np.random.choice(len(X_test), n, replace=False)
+def save_tsne_data(model, X_tsne: np.ndarray, y_true_tsne: np.ndarray,
+                   exp_dir: str):
+    """
+    Self-contained t-SNE helper.
 
-    feats = _extract_features(model, X_test[idx])
+    X_tsne      : (n, L, 1) numpy array aligned with y_true_tsne
+    y_true_tsne : (n,) class indices OR (n, C) multi-label int array
+    """
+    print('Running t-SNE…')
+    n   = min(len(X_tsne), config.TSNE_MAX_SAMPLES)
+    idx = np.random.choice(len(X_tsne), n, replace=False)
+
+    X_s     = X_tsne[idx]
+    y_s     = y_true_tsne[idx]
+    y_proba = model.predict(X_s, batch_size=config.BATCH_SIZE, verbose=0)
+
+    if config.MULTI_LABEL:
+        y_pred = (y_proba > 0.5).astype(np.int32)
+    else:
+        y_pred = np.argmax(y_proba, axis=-1).astype(np.int32)
+
+    feats = _extract_features(model, X_s)
     emb   = TSNE(n_components=2, perplexity=config.TSNE_PERPLEXITY,
                  random_state=42, n_jobs=-1).fit_transform(feats)
 
     np.savez(
         os.path.join(exp_dir, 'tsne_data.npz'),
         embeddings   = emb,
-        labels       = y_test[idx].astype(np.int32),
-        predictions  = y_pred[idx].astype(np.int32),
-        probabilities= y_proba[idx].astype(np.float32),
-        samples      = X_test[idx].squeeze(-1).astype(np.float32),
+        labels       = y_s.astype(np.int32),
+        predictions  = y_pred,
+        probabilities= y_proba.astype(np.float32),
+        samples      = X_s.squeeze(-1).astype(np.float32),
     )
     print(f't-SNE saved → {exp_dir}/tsne_data.npz')
 
@@ -301,13 +316,29 @@ def save_weights(model, exp_dir: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def full_eval(model, X_train, y_train, X_test, y_test,
-              history=None, exp_name: str = None) -> dict:
+              history=None, exp_name: str = None,
+              X_tsne: np.ndarray = None, y_tsne: np.ndarray = None,
+              y_proba: np.ndarray = None) -> dict:
+    """
+    X_test   : numpy array, tf.data.Dataset, or None (when y_proba is given)
+    y_proba  : pre-computed probabilities (N, C).  When provided, X_test is
+               not used for prediction — pass this to bypass model.predict
+               and avoid the cudnn DEVICE_TYPE_INVALID error on lazy datasets.
+    X_tsne   : small numpy array (TSNE_MAX_SAMPLES rows) aligned with y_tsne.
+    y_tsne   : labels aligned with X_tsne.
+    """
     if exp_name is None:
         exp_name = config.get_exp_name()
     exp_dir = _make_exp_dir(exp_name)
     print(f'\n── Evaluating: {exp_name} ──')
 
-    y_proba = model.predict(X_test, verbose=0)
+    if y_proba is None:
+        is_dataset = isinstance(X_test, tf.data.Dataset)
+        if is_dataset:
+            y_proba = model.predict(X_test, verbose=0)
+        else:
+            X_test  = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
+            y_proba = model.predict(X_test, batch_size=config.BATCH_SIZE, verbose=0)
 
     if config.MULTI_LABEL:
         y_true  = (y_test > 0).astype(int)
@@ -320,9 +351,13 @@ def full_eval(model, X_train, y_train, X_test, y_test,
         save_weights(model, exp_dir)
 
         if config.TSNE_ENABLED:
-            tsne_labels = np.argmax(y_true, axis=-1)
-            tsne_preds  = np.argmax(y_pred, axis=-1)
-            save_tsne_data(model, X_test, tsne_labels, tsne_preds, y_proba, exp_dir)
+            _X = X_tsne if X_tsne is not None else (None if is_dataset else X_test)
+            _y = (y_tsne > 0).astype(int) if y_tsne is not None else (
+                 y_true if not is_dataset else None)
+            if _X is not None and _y is not None:
+                save_tsne_data(model, _X, _y, exp_dir)
+            else:
+                print('[eval] Skipping t-SNE: X_tsne/y_tsne not provided.')
 
         print(f"  Subset Acc  : {metrics['subset_accuracy']*100:.2f}%")
         print(f"  Hamming Loss: {metrics['hamming_loss']*100:.4f}")
@@ -341,7 +376,13 @@ def full_eval(model, X_train, y_train, X_test, y_test,
         save_weights(model, exp_dir)
 
         if config.TSNE_ENABLED:
-            save_tsne_data(model, X_test, y_test.astype(int), y_pred, y_proba, exp_dir)
+            _X = X_tsne if X_tsne is not None else (None if is_dataset else X_test)
+            _y = y_tsne.astype(int) if y_tsne is not None else (
+                 y_test.astype(int) if not is_dataset else None)
+            if _X is not None and _y is not None:
+                save_tsne_data(model, _X, _y, exp_dir)
+            else:
+                print('[eval] Skipping t-SNE: X_tsne/y_tsne not provided.')
 
         print(f"  Overall Acc : {metrics['acc']*100:.2f}%")
         print(f"  Macro  F1   : {metrics['macro_f1']*100:.2f}%")
@@ -351,3 +392,19 @@ def full_eval(model, X_train, y_train, X_test, y_test,
                   f"F1={metrics['pc_f1'][i]*100:.1f}%")
 
     return metrics
+
+
+def full_eval_hicardi(model, X_mmap, Y, te_idx, history=None, exp_name=None):
+    """Hicardi 전용 래퍼 — mmap에서 직접 추론·t-SNE 준비 후 full_eval 호출."""
+    from batchloader_hicardi import predict_from_mmap, TARGET_LENGTH
+
+    y_test  = Y[te_idx]
+    print(f'[eval] Running chunk-based predict on {len(te_idx):,} val samples…')
+    y_proba = predict_from_mmap(model, X_mmap, te_idx)
+
+    tsne_n  = min(config.TSNE_MAX_SAMPLES, len(te_idx))
+    X_tsne  = np.array(X_mmap[te_idx[:tsne_n]], dtype=np.float32).reshape(-1, TARGET_LENGTH, 1)
+    np.nan_to_num(X_tsne, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return full_eval(model, None, None, None, y_test, history, exp_name,
+                     X_tsne=X_tsne, y_tsne=y_test[:tsne_n], y_proba=y_proba)

@@ -6,7 +6,8 @@ import datetime
 # ============================================================
 DATASET_MODE = 'hicardi'  # Change to 'hicardi' for Hicardi multi-label
 
-DATA_ROOT = './Holter01_Local_Clinic_124_records_temp'
+DATA_ROOT        = './Holter01_Local_Clinic_124_records_temp'
+HICARDI_DB_ROOT  = './mezoo_db'   # root containing all Holter* subdirectories (WSL path)
 SAVE_DIR  = './results'
 RECORDS   = os.path.join(DATA_ROOT, 'RECORDS')
 
@@ -14,9 +15,11 @@ WINDOW_LEFT  = 99
 WINDOW_RIGHT = 201
 WINDOW_SIZE  = WINDOW_LEFT + WINDOW_RIGHT   # 300  (MIT-BIH single-beat)
 
-# Hicardi 4-beat window (200 Hz × 4 s)
+# Hicardi 4-beat window
 HICARDI_FS          = 200
-HICARDI_WINDOW_SIZE = int(HICARDI_FS * 4)  # 800
+HICARDI_PRE         = 360   # samples before first R-peak  (1.8 s at 200 Hz)
+HICARDI_POST        = 359   # samples after  last  R-peak  (1.795 s at 200 Hz)
+HICARDI_WINDOW_SIZE = 800   # 800-sample windows (200 Hz × 4 s) as stored in data/hicardi cache
 
 PATIENT_IDS = [
     '100', '101', '102', '103', '104', '105', '106', '107', '108', '109',
@@ -88,7 +91,7 @@ SMOTE_TARGET  = 50_000   # classes 1-4 target after SMOTE
 
 
 # Experiment metadata (used in exp name & Excel)
-MODEL_NAME     = 'CATNet'
+MODEL_NAME     = 'ResUNet'
 OPTIMIZER_NAME = 'adam'
 LOSS_NAME      = 'sparse_ce'
 SCHEDULER_NAME = 'none'

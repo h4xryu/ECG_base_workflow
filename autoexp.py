@@ -23,8 +23,12 @@ import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
 import config
-from dataloader  import load_raw_data
-from batchloader import get_batches
+
+if config.DATASET_MODE == 'hicardi':
+    from batchloader_hicardi import load_raw_data, get_batches
+else:
+    from dataloader import load_raw_data
+    from batchloader_mitbih import get_batches
 from model       import build_model
 from modules     import CATNet, ChannelAttention
 from metrics     import compute_metrics

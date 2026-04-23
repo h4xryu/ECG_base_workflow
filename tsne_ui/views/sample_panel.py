@@ -105,6 +105,54 @@ class SamplePanel(QWidget):
         self._fig.tight_layout(pad=1.2)
         self.canvas.draw()
 
+    def save_ecg(self, path: str):
+        """ECG 파형만 별도 figure로 저장."""
+        fig, ax = self._fig.axes[0].get_figure(), self._ax_ecg
+        # 독립 figure로 복사해서 저장
+        import io
+        buf = io.BytesIO()
+        # ax만 포함된 새 figure 생성
+        import matplotlib.pyplot as plt
+        fig2, ax2 = plt.subplots(figsize=(8, 3))
+        fig2.patch.set_facecolor('white')
+        ax2.set_facecolor('white')
+        for line in ax.get_lines():
+            ax2.plot(line.get_xdata(), line.get_ydata(),
+                     color=line.get_color(), linewidth=line.get_linewidth())
+        ax2.set_title(ax.get_title(), fontsize=12)
+        ax2.set_xlabel(ax.get_xlabel()); ax2.set_ylabel(ax.get_ylabel())
+        ax2.tick_params(labelsize=9)
+        fig2.tight_layout()
+        fig2.savefig(path, dpi=200, bbox_inches='tight')
+        plt.close(fig2)
+
+    def save_probs(self, path: str):
+        """Probability bar chart만 별도 figure로 저장."""
+        import matplotlib.pyplot as plt
+        ax = self._ax_prob
+        fig2, ax2 = plt.subplots(figsize=(8, 4))
+        fig2.patch.set_facecolor('white')
+        ax2.set_facecolor('white')
+        for patch in ax.patches:
+            ax2.bar(patch.get_x() + patch.get_width() / 2,
+                    patch.get_height(), width=patch.get_width(),
+                    color=patch.get_facecolor(), alpha=patch.get_alpha() or 1.0,
+                    edgecolor=patch.get_edgecolor(),
+                    linewidth=patch.get_linewidth())
+        # x tick labels
+        ax2.set_xticks(range(len(ax.get_xticklabels())))
+        ax2.set_xticklabels([t.get_text() for t in ax.get_xticklabels()],
+                            rotation=30, ha='right', fontsize=8)
+        ax2.set_ylim(0, 1.12)
+        ax2.set_title(ax.get_title(), fontsize=12)
+        ax2.set_ylabel(ax.get_ylabel())
+        ax2.tick_params(labelsize=9)
+        # threshold line
+        ax2.axhline(0.5, color='#ffaa44', linewidth=1.0, linestyle='--', alpha=0.7)
+        fig2.tight_layout()
+        fig2.savefig(path, dpi=200, bbox_inches='tight')
+        plt.close(fig2)
+
     # ── Drawing helpers ───────────────────────────────────────────────────────
 
     def _draw_ecg(self, signal: np.ndarray, true_lbl: int):

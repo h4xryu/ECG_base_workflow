@@ -12,8 +12,8 @@ Layout (1550 × 870):
 from PyQt5.QtCore    import Qt
 from PyQt5.QtGui     import QFont
 from PyQt5.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QSplitter, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
 from views.tsne_canvas  import TSNECanvas
@@ -53,8 +53,20 @@ class MainWindow(QMainWindow):
         self.exp_combo.setFont(QFont('Segoe UI', 10))
         self.exp_combo.setMaxVisibleItems(20)
 
+        self.btn_save_tsne  = self._make_btn('💾 t-SNE')
+        self.btn_save_ecg   = self._make_btn('💾 ECG')
+        self.btn_save_probs = self._make_btn('💾 Probs')
+
+        self.btn_save_tsne.clicked.connect(self._save_tsne)
+        self.btn_save_ecg.clicked.connect(self._save_ecg)
+        self.btn_save_probs.clicked.connect(self._save_probs)
+
         top_row.addWidget(title)
         top_row.addStretch()
+        top_row.addWidget(self.btn_save_tsne)
+        top_row.addWidget(self.btn_save_ecg)
+        top_row.addWidget(self.btn_save_probs)
+        top_row.addSpacing(16)
         top_row.addWidget(exp_label)
         top_row.addWidget(self.exp_combo)
         layout.addWidget(top)
@@ -80,6 +92,39 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(splitter, stretch=1)
 
+    # ── Save helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_btn(text: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFont(QFont('Segoe UI', 9))
+        btn.setFixedHeight(28)
+        return btn
+
+    def _save_tsne(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save t-SNE', 'tsne.png',
+            'PNG (*.png);;SVG (*.svg);;PDF (*.pdf)',
+        )
+        if path:
+            self.tsne_canvas.save_figure(path)
+
+    def _save_ecg(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save ECG', 'ecg.png',
+            'PNG (*.png);;SVG (*.svg);;PDF (*.pdf)',
+        )
+        if path:
+            self.sample_panel.save_ecg(path)
+
+    def _save_probs(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save Probabilities', 'probs.png',
+            'PNG (*.png);;SVG (*.svg);;PDF (*.pdf)',
+        )
+        if path:
+            self.sample_panel.save_probs(path)
+
     def _apply_theme(self):
         self.setStyleSheet(f"""
             QMainWindow, QWidget   {{ background-color: {_DARK}; color: #e0e0e0; }}
@@ -91,4 +136,9 @@ class MainWindow(QMainWindow):
             QComboBox::drop-down   {{ border: none; width: 22px; }}
             QSplitter::handle      {{ background-color: #2a2a4a; }}
             QLabel                 {{ color: #e0e0e0; }}
+            QPushButton            {{ background-color: #0f3460; color: #e0e0e0;
+                                      border: 1px solid #444466; border-radius: 4px;
+                                      padding: 3px 10px; }}
+            QPushButton:hover      {{ background-color: #1a4a80; }}
+            QPushButton:pressed    {{ background-color: #0a2040; }}
         """)

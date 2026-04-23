@@ -1,184 +1,192 @@
 """
-batchloader_hicardi.py — Data loader for Hicardi multi-label ECG classification.
+batchloader_hicardi.py — Memory-mapped lazy-loading pipeline for Hicardi ECG.
 
-Drop-in replacement for dataloader + batchloader_mitbih when using Hicardi dataset.
+Instead of loading the full .npy arrays into RAM, this module:
+  1. Opens segments.npy with mmap_mode='r' — file stays on disk, only accessed
+     pages are paged in by the OS on demand.
+  2. Splits only the index array (not the data) into train/test.
+  3. Builds tf.data pipelines that fetch individual samples via tf.py_function,
+     so GPU compute and disk I/O overlap via prefetch(AUTOTUNE).
 
-Usage in autoexp.py / train.py:
-    from batchloader_hicardi import load_raw_data, get_batches
-
-Interface (identical to existing loaders):
-    load_raw_data(data_dir=None) -> X (N, TARGET_LENGTH), Y (N, n_classes)
-    get_batches(X, Y)            -> X_tr, X_te, y_tr, y_te  (shape: N, TARGET_LENGTH, 1)
-
-Data source: full_multi_label/ directory produced by create_full_multilabel_dataset()
-             (see preprocess_4beat.py)
+Public API
+----------
+    load_raw_data()           -> (X_mmap, Y)
+    get_tf_datasets(X_mmap, Y) -> (train_ds, val_ds, tr_idx, te_idx)
+    get_batches(X, Y)          -> (X_tr, X_te, y_tr, y_te)  [legacy, small datasets]
 """
 
 import numpy as np
+import tensorflow as tf
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
 import config
-from dataloader import load_holter_mat
+
+_DEFAULT_CACHE_DIR = './data/hicardi'
+TARGET_LENGTH      = config.HICARDI_WINDOW_SIZE   # 800
+N_CLASSES          = config.HICARDI_N_CLASSES     # 9
+TEST_SIZE          = config.TEST_SIZE              # 0.2
+RANDOM_SEED        = config.RANDOM_SEED            # 104
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Configuration (can be overridden by passing data_dir explicitly)
-# ────────────────────────────────────────────────────────────────────────────
-
-_DEFAULT_DATA_DIR = './data/hicardi'
-TARGET_LENGTH     = config.HICARDI_WINDOW_SIZE  # 800 samples (200 Hz × 4 s)
-TEST_SIZE         = config.TEST_SIZE     # 0.2
-RANDOM_SEED       = config.RANDOM_SEED   # 104
-
-
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Public API
-# ────────────────────────────────────────────────────────────────────────────
-
-def load_raw_data(data_dir=None):
+# ─────────────────────────────────────────────────────────────────────────────
+import os
+def load_raw_data(cache_dir='./mezoo_db'):
     """
-    Cache-aware loader: loads segments.npy/labels.npy if present,
-    otherwise builds them from raw .mat files (config.DATA_ROOT) and saves.
+    Returns (X_mmap, Y):
+        X_mmap : np.memmap  (N, TARGET_LENGTH)  float32 — disk-backed, not copied to RAM
+        Y      : np.ndarray (N, N_CLASSES)      float32 — fully loaded (labels are small)
 
-    Returns:
-        X : np.ndarray  (N, TARGET_LENGTH)      float32, z-score normalised
-        Y : np.ndarray  (N, N_CLASSES)           float32, multi-hot
+    Cache hit  → mmap-opens segments.npy, fully loads labels.npy.
+    Cache miss → scans all .mat files under config.HICARDI_DB_ROOT recursively,
+                 saves segments.npy / labels.npy, then mmap-opens.
     """
-    data_dir = Path(data_dir) if data_dir else Path(_DEFAULT_DATA_DIR)
-    seg_file = data_dir / 'segments.npy'
-    lbl_file = data_dir / 'labels.npy'
+    # cache_dir = Path(cache_dir or _DEFAULT_CACHE_DIR)
+    seg_path = f"{cache_dir}/hicardi_segments.npy"
+    lbl_path  = f"{cache_dir}/hicardi_labels.npy"
+    print(seg_path)
+    print(lbl_path)
+    # if not (seg_path.exists() and lbl_path.exists()):
+    #     print(f'[batchloader_hicardi] Cache miss — building from {config.HICARDI_DB_ROOT}')
+    #     from dataloader import load_holter_mat
+    #     cache_dir.mkdir(parents=True, exist_ok=True)
+    #     X_full, Y_full = load_holter_mat(config.HICARDI_DB_ROOT)
+    #     # np.save(str(seg_path), X_full)
+    #     np.save(str(lbl_path), Y_full)
+    #     del X_full, Y_full
 
-    if seg_file.exists() and lbl_file.exists():
-        print(f'[batchloader_hicardi] Cache hit — loading from {data_dir}')
-        X = np.load(seg_file)
-        Y = (np.load(lbl_file) > 0).astype(np.float32)  # ensure binary regardless of cache age
-    else:
-        print(f'[batchloader_hicardi] Cache miss — building from raw .mat files in {config.DATA_ROOT}')
-        X, Y = load_holter_mat(data_root=config.DATA_ROOT)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        np.save(seg_file, X)
-        np.save(lbl_file, Y)
-        print(f'[batchloader_hicardi] Saved cache → {seg_file}')
-        print(f'[batchloader_hicardi] Saved cache → {lbl_file}')
+    print(f'[batchloader_hicardi] Cache hit — loading from {cache_dir}')
+    X_mmap = np.load(str(seg_path), mmap_mode='r')
+    Y      = (np.load(str(lbl_path)) > 0).astype(np.float32)
 
-    assert X.ndim == 2, f"Expected 2D segments, got shape {X.shape}"
-    assert Y.ndim == 2, f"Expected 2D labels, got shape {Y.shape}"
-    assert X.shape[0] == Y.shape[0], f"Shape mismatch: X={X.shape}, Y={Y.shape}"
-    assert Y.shape[1] == config.N_CLASSES, \
-        f"Expected {config.N_CLASSES} classes, got {Y.shape[1]} — delete cache and re-run"
+    assert X_mmap.ndim == 2 and X_mmap.shape[1] == TARGET_LENGTH, \
+        f"Unexpected segment shape {X_mmap.shape}; expected (N, {TARGET_LENGTH}). " \
+        f"Delete cache and re-run."
+    assert Y.shape == (X_mmap.shape[0], N_CLASSES), \
+        f"Label shape mismatch: X={X_mmap.shape}, Y={Y.shape}"
 
-    print(f'[batchloader_hicardi] X={X.shape}  Y={Y.shape}')
+    print(f'[batchloader_hicardi] X={X_mmap.shape}  Y={Y.shape}')
     print(f'[batchloader_hicardi] Classes: {config.CLASS_NAMES}')
-    return X, Y
+    return X_mmap, Y
 
+
+def get_tf_datasets(X_mmap, Y, batch_size=None):
+    """
+    Split by index → lazy tf.data pipeline that fetches from mmap on demand.
+
+    No segment data is materialised into RAM.  Only the integer index arrays
+    and the label array (Y) are held in memory — both are tiny relative to X.
+
+    Returns
+    -------
+    train_ds : tf.data.Dataset  — batched, shuffled, prefetched
+    val_ds   : tf.data.Dataset  — batched, prefetched
+    tr_idx   : np.ndarray[int32]
+    te_idx   : np.ndarray[int32]
+    """
+    batch_size = batch_size or config.BATCH_SIZE
+    idx = np.arange(len(Y), dtype=np.int32)
+
+    tr_idx, te_idx = train_test_split(
+        idx,
+        test_size    = TEST_SIZE,
+        random_state = RANDOM_SEED,
+        shuffle      = True,
+    )
+
+    print(f'[batchloader_hicardi] Lazy pipeline: '
+          f'train={len(tr_idx)}  val={len(te_idx)} …', flush=True)
+
+    # Y fits in RAM (N × 9 float32 ≈ 235 MB for 6.5 M samples)
+    n_pos_tr = Y[tr_idx].sum(axis=0).astype(int)
+    n_pos_te = Y[te_idx].sum(axis=0).astype(int)
+    for name, tr, te in zip(config.CLASS_NAMES, n_pos_tr, n_pos_te):
+        print(f'  {name:<35}  train={tr:6d}  val={te:5d}')
+
+    _seg = X_mmap  # mmap reference — stays on disk
+
+    def _fetch(i):
+        i = int(i.numpy())
+        x = np.array(_seg[i], dtype=np.float32)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        return x.reshape(TARGET_LENGTH, 1), Y[i]
+
+    def _fetch_tf(i):
+        x, y = tf.py_function(_fetch, [i], Tout=[tf.float32, tf.float32])
+        x.set_shape((TARGET_LENGTH, 1))
+        y.set_shape((N_CLASSES,))
+        return x, y
+
+    def make_ds(indices, shuffle):
+        ds = tf.data.Dataset.from_tensor_slices(indices)
+        if shuffle:
+            # buffer holds integer indices only (4 bytes each) — negligible RAM
+            ds = ds.shuffle(len(indices), reshuffle_each_iteration=True)
+        ds = ds.map(_fetch_tf, num_parallel_calls=tf.data.AUTOTUNE)
+        return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+    return make_ds(tr_idx, True), make_ds(te_idx, False), tr_idx, te_idx
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chunk-based inference (avoids cudnn DEVICE_TYPE_INVALID on py_function ds)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def predict_from_mmap(model, X_mmap, te_idx, batch_size=None):
+    """
+    Run model inference directly from mmap one batch at a time.
+
+    Why not model.predict(val_ds)?
+    model.predict compiles a brand-new predict_step graph.  When the dataset
+    is backed by tf.py_function the output tensors carry no concrete device
+    placement, causing cudnn to report DEVICE_TYPE_INVALID and crash.
+
+    Calling model(numpy_chunk, training=False) gives TF a fully concrete
+    CPU tensor; it inserts an explicit H2D copy before the GPU conv, which
+    the cudnn autotuner handles correctly.
+
+    Peak RAM = one batch (batch_size × TARGET_LENGTH × 4 bytes ≈ 400 KB).
+    """
+    batch_size = batch_size or config.BATCH_SIZE
+    n          = len(te_idx)
+    y_proba    = np.empty((n, N_CLASSES), dtype=np.float32)
+
+    for start in range(0, n, batch_size):
+        chunk_idx = te_idx[start : start + batch_size]
+        X_chunk   = np.array(X_mmap[chunk_idx], dtype=np.float32).reshape(-1, TARGET_LENGTH, 1)
+        np.nan_to_num(X_chunk, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        end               = start + len(chunk_idx)
+        y_proba[start:end] = model(X_chunk, training=False).numpy()
+
+    return y_proba
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy: full-array API (small datasets or non-hicardi code)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_batches(X, Y):
     """
-    Train/test split then reshape to Conv1D input (N, TARGET_LENGTH, 1).
-    
-    Args:
-        X : np.ndarray  (N, TARGET_LENGTH)  — ECG segments
-        Y : np.ndarray  (N, 7)              — multi-hot labels
-    
-    Returns:
-        X_tr : np.ndarray  (N_tr, TARGET_LENGTH, 1)  — float32
-        X_te : np.ndarray  (N_te, TARGET_LENGTH, 1)  — float32
-        y_tr : np.ndarray  (N_tr, 7)                 — float32
-        y_te : np.ndarray  (N_te, 7)                 — float32
-    
-    Notes:
-        - Uses stratify=None (random split) to avoid complexity with multi-label
-        - Y is not stratified; consider MultiLabelStratifiedShuffleSplit if needed
+    Legacy API: materialises full train/test arrays into RAM.
+    For large Hicardi data use get_tf_datasets() instead.
     """
     X_tr, X_te, y_tr, y_te = train_test_split(
-        X, Y,
-        test_size=TEST_SIZE,
-        random_state=RANDOM_SEED,
-        shuffle=True,
-        stratify=None  # Multi-label stratification is complex; use random split
+        np.asarray(X), Y,
+        test_size    = TEST_SIZE,
+        random_state = RANDOM_SEED,
+        shuffle      = True,
+        stratify     = None,
     )
-    
-    # Reshape to Conv1D input (N, TARGET_LENGTH, 1)
     X_tr = X_tr.reshape(-1, TARGET_LENGTH, 1).astype(np.float32)
     X_te = X_te.reshape(-1, TARGET_LENGTH, 1).astype(np.float32)
-    
-    # Ensure labels are float32 (for binary crossentropy)
     y_tr = y_tr.astype(np.float32)
     y_te = y_te.astype(np.float32)
-    
     print(f'[batchloader_hicardi] Train: X_tr={X_tr.shape}, y_tr={y_tr.shape}')
     print(f'[batchloader_hicardi] Test:  X_te={X_te.shape}, y_te={y_te.shape}')
-    
-    # Class distribution summary
-    n_positive_tr = np.sum(y_tr, axis=0)
-    n_positive_te = np.sum(y_te, axis=0)
-    print(f'[batchloader_hicardi] Train class distribution: {n_positive_tr.astype(int)}')
-    print(f'[batchloader_hicardi] Test class distribution:  {n_positive_te.astype(int)}')
-    
+    n_pos_tr = np.sum(y_tr, axis=0).astype(int)
+    n_pos_te = np.sum(y_te, axis=0).astype(int)
+    print(f'[batchloader_hicardi] Train class dist: {n_pos_tr}')
+    print(f'[batchloader_hicardi] Test  class dist: {n_pos_te}')
     return X_tr, X_te, y_tr, y_te
-
-
-def prepare_and_split(data_dir=None, out_dir=None, test_size=None, random_seed=None):
-    """
-    Prepare train/test splits from full_multi_label dataset and save to disk.
-
-    Args:
-        data_dir:    Path to full_multi_label directory (segments.npy/labels.npy).
-        out_dir:     Output directory to save splits (defaults to data_dir/splits).
-        test_size:   Fraction for test split (defaults to config.TEST_SIZE).
-        random_seed: Random seed for splitting (defaults to config.RANDOM_SEED).
-    Returns:
-        dict with paths of saved files.
-    """
-    from sklearn.model_selection import train_test_split
-
-    data_dir = Path(data_dir) if data_dir else Path(_DEFAULT_DATA_DIR)
-    out_dir = Path(out_dir) if out_dir else data_dir / 'splits'
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    test_size = config.TEST_SIZE if test_size is None else test_size
-    random_seed = config.RANDOM_SEED if random_seed is None else random_seed
-
-    seg_file = data_dir / 'segments.npy'
-    lbl_file = data_dir / 'labels.npy'
-    if not seg_file.exists() or not lbl_file.exists():
-        raise FileNotFoundError(f"segments/labels not found in {data_dir}")
-
-    X = np.load(seg_file)
-    Y = np.load(lbl_file)
-
-    X_tr, X_te, y_tr, y_te = train_test_split(X, Y, test_size=test_size, random_state=random_seed)
-
-    # Save raw (N, L) arrays and reshaped Conv1D arrays
-    np.save(out_dir / 'X_train.npy', X_tr)
-    np.save(out_dir / 'X_test.npy',  X_te)
-    np.save(out_dir / 'y_train.npy', y_tr)
-    np.save(out_dir / 'y_test.npy',  y_te)
-
-    # Also save Conv1D-ready versions
-    np.save(out_dir / 'X_train_cnn.npy', X_tr.reshape(-1, TARGET_LENGTH, 1).astype(np.float32))
-    np.save(out_dir / 'X_test_cnn.npy',  X_te.reshape(-1, TARGET_LENGTH, 1).astype(np.float32))
-
-    print(f"Prepared splits in: {out_dir}")
-    return {
-        'out_dir': str(out_dir),
-        'X_train': str(out_dir / 'X_train.npy'),
-        'X_test':  str(out_dir / 'X_test.npy'),
-        'y_train': str(out_dir / 'y_train.npy'),
-        'y_test':  str(out_dir / 'y_test.npy'),
-    }
-
-
-if __name__ == '__main__':
-    # Simple CLI to prepare splits from the default data directory
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Prepare Hicardi dataset splits.')
-    parser.add_argument('--data_dir', default=None, help='full_multi_label directory')
-    parser.add_argument('--out_dir',  default=None, help='output splits directory')
-    parser.add_argument('--test_size', type=float, default=None, help='test split fraction')
-    parser.add_argument('--seed', type=int, default=None, help='random seed')
-    args = parser.parse_args()
-
-    prepare_and_split(data_dir=args.data_dir, out_dir=args.out_dir, test_size=args.test_size, random_seed=args.seed)

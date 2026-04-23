@@ -81,9 +81,10 @@ class Trainer:
 
     def fit(self,
             X_train, y_train,
-            X_val,   y_val,
-            epochs:        int,
-            batch_size:    int,
+            X_val   = None,
+            y_val   = None,
+            epochs:        int = 1,
+            batch_size:    int = 128,
             logger=None,
             weights_path:  str  = None,
             hist_freq:     int  = 5,
@@ -91,23 +92,30 @@ class Trainer:
         """
         Parameters
         ----------
+        X_train, y_train : numpy arrays  OR  pre-built tf.data.Dataset objects.
+                           When passing datasets, put train_ds as X_train and
+                           val_ds as y_train; X_val / y_val are ignored.
         logger             : TrainingLogger — pass None to skip TensorBoard.
         weights_path       : saves best val_acc checkpoint here.
         hist_freq          : log weight histograms every N epochs.
         full_metrics_freq  : compute full sklearn metrics (AUROC, per-class…)
                              on val set every N epochs; 0 = scalars only.
         """
-        history    = History()
-        best_acc   = 0.0
+        history  = History()
+        best_acc = 0.0
 
-        tr_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
-                 .shuffle(min(len(X_train), 10_000))
-                 .batch(batch_size)
-                 .prefetch(tf.data.AUTOTUNE))
-
-        vl_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-                 .batch(batch_size)
-                 .prefetch(tf.data.AUTOTUNE))
+        if isinstance(X_train, tf.data.Dataset):
+            # Pre-built datasets — already batched, shuffled, prefetched
+            tr_ds = X_train
+            vl_ds = y_train
+        else:
+            tr_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
+                     .shuffle(min(len(X_train), 10_000))
+                     .batch(batch_size)
+                     .prefetch(tf.data.AUTOTUNE))
+            vl_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
+                     .batch(batch_size)
+                     .prefetch(tf.data.AUTOTUNE))
 
         for epoch in range(epochs):
 
